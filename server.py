@@ -1,7 +1,8 @@
 
 import os
 import json
-import sqlite3
+import psycopg
+from psycopg.rows import dict_row
 import hashlib
 import secrets
 import urllib.request
@@ -13,16 +14,21 @@ from fastapi.responses import JSONResponse
 
 app = FastAPI(title="GA3 Invoice Agent", version="1.0.0")
 
-DB_PATH = os.getenv("DB_PATH", "/tmp/ga3_tasks.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 # ---------- Persistent task storage ----------
 
 def connect_db():
-    db = sqlite3.connect(DB_PATH, timeout=20)
-    db.row_factory = sqlite3.Row
-    return db
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is not configured")
+    return psycopg.connect(
+        DATABASE_URL,
+        row_factory=dict_row,
+        connect_timeout=10,
+        sslmode="require"
+    )
 
 def init_db():
     with connect_db() as db:
@@ -238,7 +244,7 @@ def task_view(row):
 def get_owned_task(task_id, principal):
     with connect_db() as db:
         row = db.execute(
-            "SELECT * FROM tasks WHERE id=? AND principal=?",
+            "SELECT * FROM tasks WHERE id=%s AND principal=%s",
             (task_id, principal)
         ).fetchone()
     if not row:
@@ -265,14 +271,14 @@ async def send_message(request: Request):
     # Same principal + message ID must not repeat model or action work.
     with connect_db() as db:
         previous = db.execute(
-            "SELECT * FROM dedup WHERE principal=? AND message_id=?",
+            "SELECT * FROM dedup WHERE principal=%s AND message_id=%s",
             (principal, message_id)
         ).fetchone()
         if previous:
             if previous["message_hash"] != msg_hash:
                 raise HTTPException(status_code=409, detail="IDEMPOTENCY_CONFLICT")
             row = db.execute(
-                "SELECT * FROM tasks WHERE id=? AND principal=?",
+                "SELECT * FROM tasks WHERE id=%s AND principal=%s",
                 (previous["task_id"], principal)
             ).fetchone()
             return {"task": task_view(row)}
@@ -381,9 +387,9 @@ async def send_message(request: Request):
         # only one request can change INPUT_REQUIRED into a terminal state.
         with connect_db() as db:
             cur = db.execute(
-                """UPDATE tasks SET state=?, receipts=?, history=?
-                   WHERE id=? AND principal=? AND context_id=?
-                   AND state='TASK_STATE_INPUT_REQUIRED' AND batch_id=?""",
+                """UPDATE tasks SET state=%s, receipts=%s, history=%s
+                   WHERE id=%s AND principal=%s AND context_id=%s
+                   AND state='TASK_STATE_INPUT_REQUIRED' AND batch_id=%s""",
                 ("TASK_STATE_COMPLETED",
                  json.dumps({"batchId": batch_id, "executions": executions}),
                  json.dumps(json.loads(original["history"]) + [message]),
@@ -392,7 +398,7 @@ async def send_message(request: Request):
             if cur.rowcount != 1:
                 raise HTTPException(status_code=409, detail="Task is no longer available")
             row = db.execute(
-                "SELECT * FROM tasks WHERE id=? AND principal=?",
+                "SELECT * FROM tasks WHERE id=%s AND principal=%s",
                 (task_ref, principal)
             ).fetchone()
         return {"task": task_view(row)}
@@ -401,15 +407,15 @@ async def send_message(request: Request):
         db.execute(
             """INSERT INTO tasks
             (id,principal,context_id,state,batch_id,history,proposals,receipts,created_at)
-            VALUES (?,?,?,?,?,?,?,?,?)""",
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (task_id, principal, context_id, state, batch_id,
              json.dumps(history), json.dumps(proposals), None, now())
         )
         db.execute(
-            "INSERT INTO dedup VALUES (?,?,?,?)",
+            "INSERT INTO dedup VALUES (%s,%s,%s,%s)",
             (principal, message_id, msg_hash, task_id)
         )
-        row = db.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        row = db.execute("SELECT * FROM tasks WHERE id=%s", (task_id,)).fetchone()
 
     return {"task": task_view(row)}
 
@@ -418,7 +424,7 @@ async def list_tasks(request: Request):
     principal = principal_from(request)
     with connect_db() as db:
         rows = db.execute(
-            "SELECT * FROM tasks WHERE principal=? ORDER BY created_at DESC",
+            "SELECT * FROM tasks WHERE principal=%s ORDER BY created_at DESC",
             (principal,)
         ).fetchall()
     return {"tasks": [task_view(r) for r in rows]}
@@ -436,14 +442,14 @@ async def cancel_task(task_id: str, request: Request):
         raise HTTPException(status_code=409, detail="Task is already terminal")
     with connect_db() as db:
         cur = db.execute(
-            """UPDATE tasks SET state=? WHERE id=? AND principal=?
+            """UPDATE tasks SET state=%s WHERE id=%s AND principal=%s
                AND state NOT IN ('TASK_STATE_COMPLETED','TASK_STATE_CANCELED')""",
             ("TASK_STATE_CANCELED", task_id, principal)
         )
         if cur.rowcount != 1:
             raise HTTPException(status_code=409, detail="Task is already terminal")
         row = db.execute(
-            "SELECT * FROM tasks WHERE id=? AND principal=?",
+            "SELECT * FROM tasks WHERE id=%s AND principal=%s",
             (task_id, principal)
         ).fetchone()
     return {"task": task_view(row)}
