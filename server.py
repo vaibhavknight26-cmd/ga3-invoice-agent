@@ -410,7 +410,14 @@ async def send_message(request: Request):
             # Log only exception type and sanitized category, never request bodies or API keys.
             category = "gemini_http" if isinstance(exc, urllib.error.HTTPError) else ("gemini_network" if isinstance(exc, urllib.error.URLError) else ("validation" if isinstance(exc, ValueError) else "internal"))
             status = exc.code if isinstance(exc, urllib.error.HTTPError) else "n/a"
-            logger.error("Invoice analysis failed: category=%s exception=%s upstream_status=%s", category, type(exc).__name__, status)
+            upstream_error_status = "unknown"
+            if isinstance(exc, urllib.error.HTTPError):
+                try:
+                    error_payload = json.loads(exc.read(8192).decode("utf-8"))
+                    upstream_error_status = str(error_payload.get("error", {}).get("status", "unknown"))[:80]
+                except (ValueError, UnicodeError, OSError, AttributeError):
+                    upstream_error_status = "unparseable"
+            logger.error("Invoice analysis failed: category=%s exception=%s upstream_status=%s upstream_error_status=%s", category, type(exc).__name__, status, upstream_error_status)
             # Fail closed: never invent proposals or execute a payment.
             raise HTTPException(
                 status_code=503,
