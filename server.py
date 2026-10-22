@@ -169,6 +169,7 @@ Rules:
 - amountMinor is an integer amount in the smallest currency unit.
 - Do not settle invoices requiring approval, verification, rejection, or escalation.
 - If evidence is insufficient or contradictory, choose open_exception or hold_invoice.
+- Every rationale must be 60-1500 characters and explicitly cite at least two evidenceRefs verbatim.
 - Return valid JSON only, with the shape:
 {"proposals":[{"packageId":"...","action":"...",
 "facts":{"vendorName":"...","invoiceNumber":"...",
@@ -247,6 +248,13 @@ def decide_with_cache(batch):
     packages = batch.get("packages", [])
     hashes = [canonical_package_hash(p) for p in packages]
     cached = [get_cached_decision(h) for h in hashes]
+    # Discard invalid cached decisions left by earlier deployments.
+    for i, proposal in enumerate(cached):
+        if proposal is not None:
+            try:
+                validate_proposals([packages[i]], [dict(proposal, packageId=packages[i].get("packageId"))])
+            except (ValueError, TypeError, AttributeError):
+                cached[i] = None
     missing_indexes = [i for i, p in enumerate(cached) if p is None]
     if missing_indexes:
         subset = dict(batch)
@@ -258,6 +266,9 @@ def decide_with_cache(batch):
             proposal = fresh_by_id.get(str(package.get("packageId")))
             if proposal is None:
                 raise ValueError("Missing proposal for uncached package")
+            validate_proposals([package], [proposal])
+            with connect_db() as db:
+                db.execute("DELETE FROM decision_cache WHERE package_hash=%s", (hashes[i],))
             cache_decision(hashes[i], proposal)
             cached[i] = proposal
     # Ensure each result carries the current package's identifier.
@@ -431,7 +442,7 @@ async def send_message(request: Request):
                     upstream_error_status = str(error_payload.get("error", {}).get("status", "unknown"))[:80]
                 except (ValueError, UnicodeError, OSError, AttributeError):
                     upstream_error_status = "unparseable"
-            logger.error("Invoice analysis failed: category=%s exception=%s upstream_status=%s upstream_error_status=%s", category, type(exc).__name__, status, upstream_error_status)
+            logger.error("Invoice analysis failed: category=%s exception=%s reason=%s upstream_status=%s upstream_error_status=%s", category, type(exc).__name__, str(exc) if isinstance(exc, ValueError) else "redacted", status, upstream_error_status)
             # Fail closed: never invent proposals or execute a payment.
             raise HTTPException(
                 status_code=503,
