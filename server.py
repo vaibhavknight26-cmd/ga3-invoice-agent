@@ -185,16 +185,30 @@ Invoice batch:
     }
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        + GEMINI_MODEL + ":generateContent?key=" + GEMINI_API_KEY
+        + GEMINI_MODEL + ":generateContent"
     )
     req = urllib.request.Request(
         url,
         data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_API_KEY
+        },
         method="POST"
     )
-    with urllib.request.urlopen(req, timeout=35) as response:
-        result = json.loads(response.read().decode())
+    # Retry only transient upstream failures; keep the total within the
+    # assignment's 45-second request limit.
+    import time
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=25 if attempt == 0 else 7) as response:
+                result = json.loads(response.read().decode())
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (429, 500, 502, 503, 504) or attempt == 2:
+                raise
+            time.sleep(1 + attempt)
+
 
     text = result["candidates"][0]["content"]["parts"][0]["text"]
     parsed = json.loads(text)
