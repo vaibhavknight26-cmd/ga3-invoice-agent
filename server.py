@@ -310,6 +310,13 @@ async def send_message(request: Request):
         try:
             decisions = gemini_decisions(batch)
             proposals = validate_proposals(packages, decisions)
+            used_action_ids = set()
+            for proposal in proposals:
+                action_id = secrets.token_urlsafe(18)
+                while action_id in used_action_ids:
+                    action_id = secrets.token_urlsafe(18)
+                used_action_ids.add(action_id)
+                proposal["actionId"] = action_id
         except Exception:
             # Fail closed: never invent proposals or execute a payment.
             raise HTTPException(
@@ -329,6 +336,9 @@ async def send_message(request: Request):
         if not task_ref:
             raise HTTPException(status_code=400, detail="Missing taskId")
         original = get_owned_task(task_ref, principal)
+        supplied_context = message.get("contextId")
+        if not supplied_context or supplied_context != original["context_id"]:
+            raise HTTPException(status_code=409, detail="Context mismatch")
         if original["state"] != "TASK_STATE_INPUT_REQUIRED":
             raise HTTPException(status_code=409, detail="Task is already terminal")
         if original["batch_id"] != batch_id:
@@ -337,27 +347,35 @@ async def send_message(request: Request):
         saved = json.loads(original["proposals"] or "[]")
         saved_by_id = {p["packageId"]: p for p in saved}
         executions = []
+        seen_results = set()
         for result in results:
+            if not isinstance(result, dict):
+                raise HTTPException(status_code=400, detail="Invalid result item")
             pid = str(result.get("packageId", ""))
             proposal = saved_by_id.get(pid)
             if not proposal:
-                continue
-            if result.get("actionId") is None:
-                continue
+                raise HTTPException(status_code=409, detail="Result package mismatch")
+            if pid in seen_results:
+                raise HTTPException(status_code=409, detail="Duplicate result package")
+            seen_results.add(pid)
+            if result.get("actionId") != proposal.get("actionId"):
+                raise HTTPException(status_code=409, detail="Action ID mismatch")
             if result.get("action") != proposal["action"]:
-                continue
-            if result.get("outcome") != "ACCEPTED":
-                continue
-            if not result.get("receiptNonce"):
-                continue
-            executions.append({
-                "packageId": pid,
-                "actionId": result["actionId"],
-                "action": proposal["action"],
-                "receiptNonce": result["receiptNonce"],
-                "facts": proposal["facts"],
-                "evidenceRefs": proposal["evidenceRefs"]
-            })
+                raise HTTPException(status_code=409, detail="Action mismatch")
+            if result.get("outcome") not in ("ACCEPTED", "REJECTED"):
+                raise HTTPException(status_code=400, detail="Invalid result outcome")
+            nonce = result.get("receiptNonce")
+            if not isinstance(nonce, str) or not nonce:
+                raise HTTPException(status_code=400, detail="Missing receipt nonce")
+            if result["outcome"] == "ACCEPTED":
+                executions.append({
+                    "packageId": pid,
+                    "actionId": proposal["actionId"],
+                    "action": proposal["action"],
+                    "receiptNonce": nonce,
+                    "facts": proposal["facts"],
+                    "evidenceRefs": proposal["evidenceRefs"]
+                })
 
         with connect_db() as db:
             db.execute(
