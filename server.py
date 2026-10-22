@@ -61,6 +61,13 @@ def init_db():
                 PRIMARY KEY (principal, message_id)
             )
         """)
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS decision_cache (
+                package_hash TEXT PRIMARY KEY,
+                proposal_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
 
 init_db()
 
@@ -189,6 +196,54 @@ Invoice batch:
     if not isinstance(proposals, list):
         raise ValueError("Model returned no proposals")
     return proposals
+
+def canonical_package_hash(package):
+    canonical = json.dumps(package, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+def get_cached_decision(package_hash):
+    with connect_db() as db:
+        row = db.execute(
+            "SELECT proposal_json FROM decision_cache WHERE package_hash=%s",
+            (package_hash,)
+        ).fetchone()
+    return json.loads(row["proposal_json"]) if row else None
+
+def cache_decision(package_hash, proposal):
+    # Do not cache task-specific action IDs; assign a fresh ID for each task.
+    stable = {k: v for k, v in proposal.items() if k != "actionId"}
+    with connect_db() as db:
+        db.execute(
+            """INSERT INTO decision_cache (package_hash, proposal_json, created_at)
+               VALUES (%s, %s, %s)
+               ON CONFLICT (package_hash) DO NOTHING""",
+            (package_hash, json.dumps(stable, ensure_ascii=False), now())
+        )
+
+def decide_with_cache(batch):
+    packages = batch.get("packages", [])
+    hashes = [canonical_package_hash(p) for p in packages]
+    cached = [get_cached_decision(h) for h in hashes]
+    missing_indexes = [i for i, p in enumerate(cached) if p is None]
+    if missing_indexes:
+        subset = dict(batch)
+        subset["packages"] = [packages[i] for i in missing_indexes]
+        fresh = gemini_decisions(subset)
+        fresh_by_id = {str(p.get("packageId")): p for p in fresh}
+        for i in missing_indexes:
+            package = packages[i]
+            proposal = fresh_by_id.get(str(package.get("packageId")))
+            if proposal is None:
+                raise ValueError("Missing proposal for uncached package")
+            cache_decision(hashes[i], proposal)
+            cached[i] = proposal
+    # Ensure each result carries the current package's identifier.
+    output = []
+    for package, proposal in zip(packages, cached):
+        proposal = dict(proposal)
+        proposal["packageId"] = package.get("packageId")
+        output.append(proposal)
+    return output
 
 def validate_proposals(packages, proposals):
     allowed = {
@@ -321,7 +376,9 @@ async def send_message(request: Request):
             raise HTTPException(status_code=400, detail="Invalid invoice batch")
 
         try:
-            decisions = gemini_decisions(batch)
+            # Use canonical package content as the cache key; new audit packages
+            # are analyzed afresh, while unchanged core packages reuse decisions.
+            decisions = decide_with_cache(batch)
             proposals = validate_proposals(packages, decisions)
             used_action_ids = set()
             for proposal in proposals:
