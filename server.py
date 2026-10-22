@@ -483,21 +483,41 @@ async def send_message(request: Request):
             ).fetchone()
         return {"task": task_view(row)}
 
-    with connect_db() as db:
-        db.execute(
-            """INSERT INTO tasks
-            (id,principal,context_id,state,batch_id,history,proposals,receipts,created_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-            (task_id, principal, context_id, state, batch_id,
-             json.dumps(history), json.dumps(proposals), None, now())
-        )
-        db.execute(
-            "INSERT INTO dedup VALUES (%s,%s,%s,%s)",
-            (principal, message_id, msg_hash, task_id)
-        )
-        row = db.execute("SELECT * FROM tasks WHERE id=%s", (task_id,)).fetchone()
-
-    return {"task": task_view(row)}
+    try:
+        # The unique (principal, messageId) constraint is the final guard
+        # against concurrent duplicate submissions. Both inserts share one
+        # transaction, so a losing request cannot leave an orphan Task.
+        with connect_db() as db:
+            db.execute(
+                """INSERT INTO tasks
+                (id,principal,context_id,state,batch_id,history,proposals,receipts,created_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (task_id, principal, context_id, state, batch_id,
+                 json.dumps(history), json.dumps(proposals), None, now())
+            )
+            db.execute(
+                "INSERT INTO dedup VALUES (%s,%s,%s,%s)",
+                (principal, message_id, msg_hash, task_id)
+            )
+            row = db.execute("SELECT * FROM tasks WHERE id=%s", (task_id,)).fetchone()
+        return {"task": task_view(row)}
+    except psycopg.errors.UniqueViolation:
+        # Another concurrent request won the same idempotency key.
+        with connect_db() as db:
+            previous = db.execute(
+                "SELECT * FROM dedup WHERE principal=%s AND message_id=%s",
+                (principal, message_id)
+            ).fetchone()
+            if previous:
+                if previous["message_hash"] != msg_hash:
+                    raise HTTPException(status_code=409, detail="IDEMPOTENCY_CONFLICT")
+                row = db.execute(
+                    "SELECT * FROM tasks WHERE id=%s AND principal=%s",
+                    (previous["task_id"], principal)
+                ).fetchone()
+                if row:
+                    return {"task": task_view(row)}
+        raise HTTPException(status_code=503, detail="Concurrent request could not be resolved")
 
 @app.get("/tasks")
 async def list_tasks(request: Request):
