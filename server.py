@@ -1,5 +1,6 @@
 
 import os
+import logging
 import json
 import psycopg
 from psycopg.rows import dict_row
@@ -11,6 +12,8 @@ from datetime import datetime, timezone
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
+
+logger = logging.getLogger("uvicorn.error")
 
 app = FastAPI(title="GA3 Invoice Agent", version="1.0.0")
 
@@ -403,7 +406,11 @@ async def send_message(request: Request):
                     action_id = secrets.token_urlsafe(18)
                 used_action_ids.add(action_id)
                 proposal["actionId"] = action_id
-        except Exception:
+        except Exception as exc:
+            # Log only exception type and sanitized category, never request bodies or API keys.
+            category = "gemini_http" if isinstance(exc, urllib.error.HTTPError) else ("gemini_network" if isinstance(exc, urllib.error.URLError) else ("validation" if isinstance(exc, ValueError) else "internal"))
+            status = exc.code if isinstance(exc, urllib.error.HTTPError) else "n/a"
+            logger.error("Invoice analysis failed: category=%s exception=%s upstream_status=%s", category, type(exc).__name__, status)
             # Fail closed: never invent proposals or execute a payment.
             raise HTTPException(
                 status_code=503,
