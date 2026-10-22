@@ -460,6 +460,9 @@ async def send_message(request: Request):
                     "evidenceRefs": proposal["evidenceRefs"]
                 })
 
+        if seen_results != set(saved_by_id):
+            raise HTTPException(status_code=409, detail="Incomplete result continuation")
+
         # Conditional state transition makes cancel-vs-result atomic:
         # only one request can change INPUT_REQUIRED into a terminal state.
         with connect_db() as db:
