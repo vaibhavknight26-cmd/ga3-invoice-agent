@@ -377,14 +377,20 @@ async def send_message(request: Request):
                     "evidenceRefs": proposal["evidenceRefs"]
                 })
 
+        # Conditional state transition makes cancel-vs-result atomic:
+        # only one request can change INPUT_REQUIRED into a terminal state.
         with connect_db() as db:
-            db.execute(
-                "UPDATE tasks SET state=?, receipts=?, history=? WHERE id=? AND principal=?",
+            cur = db.execute(
+                """UPDATE tasks SET state=?, receipts=?, history=?
+                   WHERE id=? AND principal=? AND context_id=?
+                   AND state='TASK_STATE_INPUT_REQUIRED' AND batch_id=?""",
                 ("TASK_STATE_COMPLETED",
                  json.dumps({"batchId": batch_id, "executions": executions}),
                  json.dumps(json.loads(original["history"]) + [message]),
-                 task_ref, principal)
+                 task_ref, principal, original["context_id"], batch_id)
             )
+            if cur.rowcount != 1:
+                raise HTTPException(status_code=409, detail="Task is no longer available")
             row = db.execute(
                 "SELECT * FROM tasks WHERE id=? AND principal=?",
                 (task_ref, principal)
@@ -429,10 +435,13 @@ async def cancel_task(task_id: str, request: Request):
     if row["state"] in ("TASK_STATE_COMPLETED", "TASK_STATE_CANCELED"):
         raise HTTPException(status_code=409, detail="Task is already terminal")
     with connect_db() as db:
-        db.execute(
-            "UPDATE tasks SET state=? WHERE id=? AND principal=?",
+        cur = db.execute(
+            """UPDATE tasks SET state=? WHERE id=? AND principal=?
+               AND state NOT IN ('TASK_STATE_COMPLETED','TASK_STATE_CANCELED')""",
             ("TASK_STATE_CANCELED", task_id, principal)
         )
+        if cur.rowcount != 1:
+            raise HTTPException(status_code=409, detail="Task is already terminal")
         row = db.execute(
             "SELECT * FROM tasks WHERE id=? AND principal=?",
             (task_id, principal)
