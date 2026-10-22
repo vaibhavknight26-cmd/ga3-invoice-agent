@@ -552,6 +552,12 @@ async def send_message(request: Request):
             )
             if cur.rowcount != 1:
                 raise HTTPException(status_code=409, detail="Task is no longer available")
+            # Record successful continuations in the same transaction as the
+            # terminal transition, so exact receipt replays are idempotent.
+            db.execute(
+                "INSERT INTO dedup (principal,message_id,message_hash,task_id) VALUES (%s,%s,%s,%s)",
+                (principal, message_id, msg_hash, task_ref)
+            )
             row = db.execute(
                 "SELECT * FROM tasks WHERE id=%s AND principal=%s",
                 (task_ref, principal)
