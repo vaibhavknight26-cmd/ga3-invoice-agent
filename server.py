@@ -250,27 +250,29 @@ def validate_proposals(packages, proposals):
         "settle_invoice", "request_approval", "hold_invoice",
         "reject_duplicate", "open_exception"
     }
-    expected = {str(p.get("packageId")) for p in packages}
+    expected_list = [str(p.get("packageId")) for p in packages]
     found = [str(p.get("packageId")) for p in proposals]
-
-    if len(found) != len(expected) or set(found) != expected:
-        raise ValueError("Proposal package IDs do not match the batch")
+    if len(set(expected_list)) != len(expected_list):
+        raise ValueError("Package IDs must be unique")
+    if len(found) != len(expected_list) or len(set(found)) != len(found) or set(found) != set(expected_list):
+        raise ValueError("Proposal package IDs must uniquely match the batch")
 
     for p in proposals:
         if p.get("action") not in allowed:
             raise ValueError("Invalid invoice action")
         facts = p.get("facts", {})
-        if not isinstance(facts.get("amountMinor"), int):
+        if not isinstance(facts, dict) or not isinstance(facts.get("amountMinor"), int) or isinstance(facts.get("amountMinor"), bool):
             raise ValueError("amountMinor must be an integer")
-        if not facts.get("vendorName") or not facts.get("invoiceNumber"):
+        if not facts.get("vendorName") or not facts.get("invoiceNumber") or not facts.get("currency"):
             raise ValueError("Missing invoice facts")
         refs = p.get("evidenceRefs")
-        if not isinstance(refs, list) or len(refs) != 3:
-            raise ValueError("Exactly three evidence references are required")
-        if not isinstance(p.get("rationale"), str) or not (
-            60 <= len(p["rationale"]) <= 1500
-        ):
+        if not isinstance(refs, list) or len(refs) != 3 or not all(isinstance(r, str) and r for r in refs) or len(set(refs)) != 3:
+            raise ValueError("Exactly three distinct evidence references are required")
+        rationale = p.get("rationale")
+        if not isinstance(rationale, str) or not (60 <= len(rationale) <= 1500):
             raise ValueError("Rationale length is invalid")
+        if sum(1 for ref in refs if ref in rationale) < 2:
+            raise ValueError("Rationale must cite at least two evidence references")
 
     return proposals
 
@@ -369,6 +371,14 @@ async def send_message(request: Request):
     state = "TASK_STATE_INPUT_REQUIRED"
 
     if batch_part:
+        config = payload.get("configuration", {})
+        required_modes = {
+            "application/vnd.ga5.invoice-action-proposals+json",
+            "application/vnd.ga5.invoice-action-receipts+json"
+        }
+        accepted_modes = config.get("acceptedOutputModes", [])
+        if not isinstance(accepted_modes, list) or not required_modes.issubset(set(accepted_modes)):
+            raise HTTPException(status_code=400, detail="Required output modes not accepted")
         batch = batch_part.get("data", {})
         batch_id = batch.get("batchId")
         packages = batch.get("packages", [])
