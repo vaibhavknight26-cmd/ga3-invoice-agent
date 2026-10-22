@@ -338,7 +338,7 @@ async def send_message(request: Request):
             raise HTTPException(status_code=400, detail="Invalid result continuation")
 
         # Continuations must refer to an existing task and its exact proposal.
-        task_ref = payload.get("taskId")
+        task_ref = message.get("taskId")
         if not task_ref:
             raise HTTPException(status_code=400, detail="Missing taskId")
         original = get_owned_task(task_ref, principal)
