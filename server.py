@@ -432,11 +432,14 @@ async def list_tasks(request: Request):
 @app.get("/tasks/{task_id}")
 async def get_task(task_id: str, request: Request):
     principal = principal_from(request)
-    return {"task": task_view(get_owned_task(task_id, principal))}
+    if request.headers.get("A2A-Version") != "1.0":
+        raise HTTPException(status_code=400, detail="Unsupported A2A version")
+    return task_view(get_owned_task(task_id, principal))
 
 @app.post("/tasks/{task_id}:cancel")
 async def cancel_task(task_id: str, request: Request):
     principal = principal_from(request)
+    check_protocol(request)
     row = get_owned_task(task_id, principal)
     if row["state"] in ("TASK_STATE_COMPLETED", "TASK_STATE_CANCELED"):
         raise HTTPException(status_code=409, detail="Task is already terminal")
@@ -452,4 +455,4 @@ async def cancel_task(task_id: str, request: Request):
             "SELECT * FROM tasks WHERE id=%s AND principal=%s",
             (task_id, principal)
         ).fetchone()
-    return {"task": task_view(row)}
+    return task_view(row)
