@@ -17,7 +17,7 @@ app = FastAPI(title="GA3 Invoice Agent", version="1.0.0")
 @app.middleware("http")
 async def a2a_response_media_type(request: Request, call_next):
     response = await call_next(request)
-    if request.url.path.startswith("/tasks") or request.url.path == "/message:send":
+    if request.url.path.startswith("/a2a/tasks") or request.url.path == "/a2a/message:send":
         response.headers["content-type"] = "application/a2a+json"
     return response
 
@@ -105,7 +105,7 @@ def agent_card(request: Request):
     # Prefer an explicitly configured public A2A base URL. This lets the
     # Agent Card advertise the exact base URL submitted to the grader.
     configured_base = os.getenv("A2A_BASE_URL", "").strip()
-    base = configured_base.rstrip("/") if configured_base else str(request.base_url).rstrip("/") + "/a2a"
+    base = (configured_base.rstrip("/") if configured_base else str(request.base_url).rstrip("/") + "/a2a") + "/"
     return {
         "name": "GA3 Invoice Action Agent",
         "description": "Evidence-based invoice decisions with approval controls, duplicate detection, and safe task execution.",
