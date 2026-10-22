@@ -102,7 +102,10 @@ def health():
 
 @app.get("/.well-known/agent-card.json")
 def agent_card(request: Request):
-    base = str(request.base_url).rstrip("/")
+    # Prefer an explicitly configured public A2A base URL. This lets the
+    # Agent Card advertise the exact base URL submitted to the grader.
+    configured_base = os.getenv("A2A_BASE_URL", "").strip()
+    base = configured_base.rstrip("/") if configured_base else str(request.base_url).rstrip("/")
     return {
         "name": "GA3 Invoice Action Agent",
         "description": "Evidence-based invoice decisions with approval controls, duplicate detection, and safe task execution.",
