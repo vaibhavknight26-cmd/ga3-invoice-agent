@@ -17,6 +17,22 @@ logger = logging.getLogger("uvicorn.error")
 
 app = FastAPI(title="GA3 Invoice Agent", version="1.0.0")
 
+# Record only the predefined conflict category, never invoice contents or tokens.
+@app.exception_handler(HTTPException)
+async def log_a2a_http_exception(request: Request, exc: HTTPException):
+    if request.url.path == "/a2a/message:send" and exc.status_code == 409:
+        safe_reasons = {
+            "IDEMPOTENCY_CONFLICT", "Context mismatch", "Task is already terminal",
+            "Batch mismatch", "Result package mismatch", "Duplicate result package",
+            "Action ID mismatch", "Action mismatch", "Incomplete result continuation",
+            "Task is no longer available"
+        }
+        reason = exc.detail if isinstance(exc.detail, str) and exc.detail in safe_reasons else "other"
+        logger.warning("A2A message conflict: reason=%s", reason)
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+
+
 @app.middleware("http")
 async def a2a_response_media_type(request: Request, call_next):
     response = await call_next(request)
