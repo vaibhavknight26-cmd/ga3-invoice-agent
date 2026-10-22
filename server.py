@@ -212,7 +212,24 @@ Invoice batch:
 
 
     text = result["candidates"][0]["content"]["parts"][0]["text"]
-    parsed = json.loads(text)
+    # Gemini occasionally emits consecutive JSON objects despite JSON mode.
+    # Decode each complete object, never discard trailing non-JSON content.
+    decoder = json.JSONDecoder()
+    remaining = text.strip()
+    parsed_objects = []
+    while remaining:
+        parsed_obj, end = decoder.raw_decode(remaining)
+        if not isinstance(parsed_obj, dict) or not isinstance(parsed_obj.get("proposals"), list):
+            raise ValueError("Model returned an invalid proposal object")
+        parsed_objects.append(parsed_obj)
+        remaining = remaining[end:].strip()
+    if not parsed_objects:
+        raise ValueError("Model returned empty JSON")
+    parsed = {"proposals": [
+        proposal
+        for obj in parsed_objects
+        for proposal in obj["proposals"]
+    ]}
     proposals = parsed.get("proposals")
     if not isinstance(proposals, list):
         raise ValueError("Model returned no proposals")
