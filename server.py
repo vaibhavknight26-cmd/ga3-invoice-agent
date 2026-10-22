@@ -198,7 +198,10 @@ Invoice batch:
     return proposals
 
 def canonical_package_hash(package):
-    canonical = json.dumps(package, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    # Package IDs and batch namespaces may change between Check and Save;
+    # cache by the semantic document content, not task-specific identifiers.
+    semantic_package = {k: v for k, v in package.items() if k not in ("packageId", "batchId", "taskId", "messageId")}
+    canonical = json.dumps(semantic_package, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 def get_cached_decision(package_hash):
