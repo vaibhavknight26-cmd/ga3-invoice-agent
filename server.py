@@ -26,7 +26,7 @@ async def a2a_response_media_type(request: Request, call_next):
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
 # ---------- Persistent task storage ----------
 
