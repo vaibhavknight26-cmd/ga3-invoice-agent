@@ -293,7 +293,7 @@ async def send_message(request: Request):
         raise HTTPException(status_code=400, detail="Unsupported message artifact")
 
     task_id = secrets.token_urlsafe(18)
-    context_id = payload.get("contextId") or secrets.token_urlsafe(12)
+    context_id = message.get("contextId") or secrets.token_urlsafe(12)
     history = [message]
     batch_id = None
     proposals = None
