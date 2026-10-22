@@ -105,7 +105,7 @@ def agent_card(request: Request):
     # Prefer an explicitly configured public A2A base URL. This lets the
     # Agent Card advertise the exact base URL submitted to the grader.
     configured_base = os.getenv("A2A_BASE_URL", "").strip()
-    base = configured_base.rstrip("/") if configured_base else str(request.base_url).rstrip("/")
+    base = configured_base.rstrip("/") if configured_base else str(request.base_url).rstrip("/") + "/a2a"
     return {
         "name": "GA3 Invoice Action Agent",
         "description": "Evidence-based invoice decisions with approval controls, duplicate detection, and safe task execution.",
@@ -321,7 +321,7 @@ def get_owned_task(task_id, principal):
         raise HTTPException(status_code=404, detail="Task not found")
     return row
 
-@app.post("/message:send")
+@app.post("/a2a/message:send")
 async def send_message(request: Request):
     check_protocol(request)
     principal = principal_from(request)
@@ -522,7 +522,7 @@ async def send_message(request: Request):
                     return {"task": task_view(row)}
         raise HTTPException(status_code=503, detail="Concurrent request could not be resolved")
 
-@app.get("/tasks")
+@app.get("/a2a/tasks")
 async def list_tasks(request: Request):
     principal = principal_from(request)
     if request.headers.get("A2A-Version") != "1.0":
@@ -534,14 +534,14 @@ async def list_tasks(request: Request):
         ).fetchall()
     return {"tasks": [task_view(r) for r in rows]}
 
-@app.get("/tasks/{task_id}")
+@app.get("/a2a/tasks/{task_id}")
 async def get_task(task_id: str, request: Request):
     principal = principal_from(request)
     if request.headers.get("A2A-Version") != "1.0":
         raise HTTPException(status_code=400, detail="Unsupported A2A version")
     return task_view(get_owned_task(task_id, principal))
 
-@app.post("/tasks/{task_id}:cancel")
+@app.post("/a2a/tasks/{task_id}:cancel")
 async def cancel_task(task_id: str, request: Request):
     principal = principal_from(request)
     check_protocol(request)
