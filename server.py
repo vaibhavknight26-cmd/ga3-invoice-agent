@@ -14,6 +14,13 @@ from fastapi.responses import JSONResponse
 
 app = FastAPI(title="GA3 Invoice Agent", version="1.0.0")
 
+@app.middleware("http")
+async def a2a_response_media_type(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/tasks") or request.url.path == "/message:send":
+        response.headers["content-type"] = "application/a2a+json"
+    return response
+
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
@@ -422,6 +429,8 @@ async def send_message(request: Request):
 @app.get("/tasks")
 async def list_tasks(request: Request):
     principal = principal_from(request)
+    if request.headers.get("A2A-Version") != "1.0":
+        raise HTTPException(status_code=400, detail="Unsupported A2A version")
     with connect_db() as db:
         rows = db.execute(
             "SELECT * FROM tasks WHERE principal=%s ORDER BY created_at DESC",
